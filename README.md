@@ -428,6 +428,3 @@ LLM调用（带Tools定义）
 返回最终回复
 ```
 
-## License
-
-MIT
