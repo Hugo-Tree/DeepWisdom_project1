@@ -1,11 +1,14 @@
 """
 LLM管理模块
 统一管理多家Model Provider的调用
+支持多模态输入（图片、音频等）
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, AsyncGenerator
+from typing import Dict, List, Optional, AsyncGenerator, Union
 import json
+import base64
+from pathlib import Path
 
 from ..config import settings, LLMProvider, LLMConfig
 
@@ -35,10 +38,21 @@ class BaseLLMClient(ABC):
     ) -> AsyncGenerator[str, None]:
         """流式对话"""
         pass
+    
+    def encode_image(self, image_path: str) -> str:
+        """将图片编码为base64"""
+        with open(image_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    
+    def is_vision_model(self) -> bool:
+        """判断是否为视觉模型"""
+        vision_keywords = ["vision", "vl", "multimodal", "4o", "claude-3"]
+        model_name = self.config.model_name.lower()
+        return any(keyword in model_name for keyword in vision_keywords)
 
 
 class OpenAIClient(BaseLLMClient):
-    """OpenAI兼容客户端（支持OpenAI、DeepSeek等）"""
+    """OpenAI兼容客户端（支持OpenAI、DeepSeek、Qwen等）"""
     
     def __init__(self, config: LLMConfig):
         super().__init__(config)
@@ -54,6 +68,29 @@ class OpenAIClient(BaseLLMClient):
             )
         return self._client
     
+    def _process_message_content(self, content: Union[str, List[Dict]]) -> Union[str, List[Dict]]:
+        """处理消息内容，支持多模态"""
+        if isinstance(content, str):
+            return content
+        
+        # 处理包含图片的消息
+        processed_content = []
+        for item in content:
+            if item.get("type") == "text":
+                processed_content.append(item)
+            elif item.get("type") == "image_url":
+                # 如果是本地文件路径，转换为base64
+                image_data = item["image_url"]
+                if isinstance(image_data, dict) and "url" in image_data:
+                    url = image_data["url"]
+                    if not url.startswith(("http://", "https://", "data:")):
+                        # 本地文件，转换为base64
+                        encoded = self.encode_image(url)
+                        image_data["url"] = f"data:image/jpeg;base64,{encoded}"
+                processed_content.append({"type": "image_url", "image_url": image_data})
+        
+        return processed_content
+    
     async def chat(
         self, 
         messages: List[Dict], 
@@ -62,9 +99,17 @@ class OpenAIClient(BaseLLMClient):
     ) -> Dict:
         client = self._get_client()
         
+        # 处理多模态消息
+        processed_messages = []
+        for msg in messages:
+            processed_msg = msg.copy()
+            if "content" in processed_msg:
+                processed_msg["content"] = self._process_message_content(processed_msg["content"])
+            processed_messages.append(processed_msg)
+        
         params = {
             "model": self.config.model_name,
-            "messages": messages,
+            "messages": processed_messages,
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
             "temperature": kwargs.get("temperature", self.config.temperature),
         }

@@ -1,6 +1,7 @@
 from .base import BaseTool, ToolParameter, ToolDefinition, ToolRegistry, tool
 from .search import LocalDocumentSearchTool, WebSearchTool, create_search_tool, create_web_search_tool
 from .common import CalculatorTool, DateTimeTool, register_common_tools
+from .multimodal import ImageSearchTool, ImageGenerationTool, ImageAnalysisTool, create_multimodal_tools
 
 __all__ = [
     # 基类
@@ -18,4 +19,9 @@ __all__ = [
     "CalculatorTool",
     "DateTimeTool",
     "register_common_tools",
+    # 多模态工具
+    "ImageSearchTool",
+    "ImageGenerationTool",
+    "ImageAnalysisTool",
+    "create_multimodal_tools",
 ]

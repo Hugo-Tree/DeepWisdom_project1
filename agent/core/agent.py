@@ -1,17 +1,19 @@
 """
 核心Agent实现
-实现多轮对话、工具调用、记忆管理
+实现多轮对话、工具调用、记忆管理、多模态理解
 """
 
 import json
+import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Union
 from enum import Enum
+from pathlib import Path
 
 from ..config import settings, LLMProvider
 from ..llm import LLMManager
 from ..memory import MemoryManager, MemoryType, create_memory_manager
-from ..tools import ToolRegistry, create_search_tool, register_common_tools
+from ..tools import ToolRegistry, create_search_tool, register_common_tools, create_multimodal_tools
 
 
 class MessageRole(Enum):
@@ -26,7 +28,7 @@ class MessageRole(Enum):
 class Message:
     """对话消息"""
     role: MessageRole
-    content: str
+    content: Union[str, List[Dict]]  # 支持文本或多模态内容
     name: Optional[str] = None  # 工具名称
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict]] = None
@@ -87,9 +89,11 @@ class Agent:
 2. 可以使用工具来获取信息或执行操作
 3. 会记住用户的偏好和相关信息
 4. 回答简洁明了，重点突出
+5. **支持多模态**：能够理解图片内容，并能生成或搜索图片
 
 当你需要查找信息时，请使用搜索工具。
 当用户分享个人信息时，请记住这些信息以便后续使用。
+当用户询问图片相关内容或需要视觉素材时，使用图片工具。
 """
     
     def __init__(
@@ -98,6 +102,7 @@ class Agent:
         llm_provider: Optional[LLMProvider] = None,
         enable_memory: bool = True,
         enable_tools: bool = True,
+        enable_multimodal: bool = True,
         docs_path: Optional[str] = None,
         memory_path: Optional[str] = None,
         history_limit: int = 10,
@@ -110,6 +115,7 @@ class Agent:
             llm_provider: LLM提供商
             enable_memory: 是否启用记忆功能
             enable_tools: 是否启用工具
+            enable_multimodal: 是否启用多模态功能
             docs_path: 文档搜索路径
             memory_path: 记忆存储路径
             history_limit: 对话历史保留条数
@@ -118,6 +124,7 @@ class Agent:
         self.llm_provider = llm_provider
         self.enable_memory = enable_memory
         self.enable_tools = enable_tools
+        self.enable_multimodal = enable_multimodal
         self.history_limit = history_limit
         
         # 初始化对话上下文
@@ -138,10 +145,51 @@ class Agent:
             docs_search_path = docs_path or settings.agent_settings.search_docs_path
             create_search_tool(docs_search_path)
             register_common_tools()
+            
+            # 注册多模态工具
+            if enable_multimodal:
+                create_multimodal_tools(
+                    enable_search=True,
+                    enable_generation=True,
+                )
         
         # 回调函数
         self.on_tool_call: Optional[Callable[[str, str], None]] = None
         self.on_tool_result: Optional[Callable[[str, str], None]] = None
+    
+    def _parse_image_path(self, text: str) -> tuple[str, Optional[str]]:
+        """从文本中解析图片路径"""
+        import re
+        # 匹配 [image:path] 或 <image:path> 格式
+        pattern = r'[\[<]image:([^\]>]+)[\]>]'
+        match = re.search(pattern, text)
+        if match:
+            image_path = match.group(1).strip()
+            # 移除图片标记，保留其他文本
+            clean_text = re.sub(pattern, '', text).strip()
+            return clean_text, image_path
+        return text, None
+    
+    def _build_multimodal_content(self, text: str, image_path: Optional[str] = None) -> Union[str, List[Dict]]:
+        """构建多模态内容"""
+        if not image_path or not self.enable_multimodal:
+            return text
+        
+        # 检查图片是否存在
+        if not os.path.exists(image_path):
+            return f"{text}\n[注意: 图片文件不存在: {image_path}]"
+        
+        # 构建多模态内容
+        content = []
+        if text:
+            content.append({"type": "text", "text": text})
+        
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": image_path}
+        })
+        
+        return content
     
     async def _build_messages(self, memory_context: str = "") -> List[Dict]:
         """构建发送给LLM的消息列表"""
@@ -238,20 +286,30 @@ class Agent:
                 user_message, assistant_response, extracted
             )
     
-    async def chat(self, user_input: str) -> str:
+    async def chat(self, user_input: str, image_path: Optional[str] = None) -> str:
         """
         与Agent对话
         
         Args:
-            user_input: 用户输入
+            user_input: 用户输入（可包含 [image:path] 标记）
+            image_path: 图片路径（可选，也可以在user_input中使用标记）
             
         Returns:
             Agent回复
         """
+        # 解析图片路径
+        if not image_path:
+            user_input, parsed_image = self._parse_image_path(user_input)
+            if parsed_image:
+                image_path = parsed_image
+        
+        # 构建消息内容
+        message_content = self._build_multimodal_content(user_input, image_path)
+        
         # 添加用户消息
         self.context.add_message(Message(
             role=MessageRole.USER,
-            content=user_input,
+            content=message_content,
         ))
         
         # 获取记忆上下文

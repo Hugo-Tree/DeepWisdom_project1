@@ -5,8 +5,7 @@
     python main.py
     
 或者指定LLM Provider：
-    python main.py --provider openai
-    python main.py --provider deepseek
+    python main.py --provider QWEN
 """
 
 import asyncio
@@ -24,17 +23,19 @@ def print_banner():
     """打印欢迎信息"""
     banner = """
 ╔═══════════════════════════════════════════════════════════════╗
-║                    🤖 通用对话 Agent                           ║
+║                    🤖 通用对话 Agent (多模态版)                 ║
 ║                                                               ║
 ║  功能特性:                                                     ║
 ║  • 多轮对话 - 保持上下文连贯                                    ║
 ║  • 智能搜索 - 自动检索本地文档                                  ║
 ║  • 记忆系统 - 记住用户偏好和信息                                ║
 ║  • 工具调用 - 计算器、日期时间等                                ║
+║  • 🎨 多模态 - 理解图片、生成图片                               ║
 ║                                                               ║
 ║  命令:                                                         ║
 ║  • /clear  - 清空对话历史                                      ║
 ║  • /memory - 查看记忆内容                                      ║
+║  • /image <路径> - 分析图片                                    ║
 ║  • /help   - 显示帮助                                          ║
 ║  • /quit   - 退出程序                                          ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -50,13 +51,27 @@ def print_help():
   /memory   显示已保存的用户记忆
   /history  显示当前对话历史
   /reload   重新加载文档
+  /image <路径>  分析指定路径的图片
   /help     显示此帮助信息
   /quit     退出程序
+
+多模态使用方式：
+  1. 图片理解：
+     - 直接输入: /image path/to/image.jpg
+     - 或在对话中: 这张图片显示了什么？[image:path/to/image.jpg]
+  
+  2. 图片生成：
+     - "帮我生成一张日落海滩的图片"
+     - "画一只可爱的小猫，卡通风格"
+  
+  3. 图片搜索：
+     - "搜索一些关于人工智能的图片"
 
 提示：
   - 可以询问任何问题，Agent会尝试回答
   - 当需要查找信息时，Agent会自动搜索本地文档
   - 分享你的偏好，Agent会记住它们
+  - 支持的图片格式: jpg, jpeg, png, gif, webp
 """
     print(help_text)
 
@@ -97,11 +112,27 @@ async def handle_command(agent: Agent, command: str) -> bool:
         if history:
             for msg in history:
                 role = "👤 用户" if msg["role"] == "user" else "🤖 助手"
-                content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
-                print(f"  {role}: {content}")
+                content = msg["content"]
+                if isinstance(content, str):
+                    display = content[:100] + "..." if len(content) > 100 else content
+                else:
+                    display = "[多模态消息]"
+                print(f"  {role}: {display}")
         else:
             print("  (暂无历史)")
         print()
+    
+    elif cmd.startswith("/image "):
+        # 处理图片命令
+        image_path = cmd[7:].strip()
+        if not os.path.exists(image_path):
+            print(f"\n❌ 图片文件不存在: {image_path}\n")
+        else:
+            print(f"\n📷 正在分析图片: {image_path}\n")
+            print("🤖 助手: ", end="", flush=True)
+            response = await agent.chat("请描述这张图片的内容", image_path=image_path)
+            print(response)
+            print()
     
     elif cmd == "/help":
         print_help()
@@ -148,6 +179,11 @@ async def main():
         action="store_true",
         help="禁用工具功能"
     )
+    parser.add_argument(
+        "--no-multimodal",
+        action="store_true",
+        help="禁用多模态功能"
+    )
     
     args = parser.parse_args()
     
@@ -191,6 +227,17 @@ async def main():
     print(f"文档路径: {args.docs}")
     print(f"记忆功能: {'启用' if not args.no_memory else '禁用'}")
     print(f"工具功能: {'启用' if not args.no_tools else '禁用'}")
+    print(f"多模态功能: {'启用' if not args.no_multimodal else '禁用'}")
+    
+    # 检查是否为视觉模型
+    if not args.no_multimodal:
+        from agent.llm import LLMManager
+        client = LLMManager.get_client(llm_provider)
+        if client.is_vision_model():
+            print("✨ 当前模型支持图片理解")
+        else:
+            print("⚠️  当前模型不支持图片理解，建议使用 qwen-vl-plus 或 gpt-4o")
+    
     print("\n" + "="*60 + "\n")
     
     # 创建Agent
@@ -198,6 +245,7 @@ async def main():
         llm_provider=llm_provider,
         enable_memory=not args.no_memory,
         enable_tools=not args.no_tools,
+        enable_multimodal=not args.no_multimodal,
         docs_path=args.docs,
     )
     
