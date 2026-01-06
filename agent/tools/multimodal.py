@@ -106,7 +106,7 @@ class ImageGenerationTool(BaseTool):
         ]
     
     async def execute(self, prompt: str, style: str = "auto", **kwargs) -> str:
-        """执行图片生成"""
+        """执行图片生成（异步轮询方式）"""
         if not self.api_key:
             return """
 ❌ 图片生成功能未配置
@@ -122,12 +122,15 @@ class ImageGenerationTool(BaseTool):
 """
         
         try:
-            # 调用通义万相API
-            url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+            import asyncio
+            
+            # 步骤1: 提交异步任务
+            submit_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
             
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "X-DashScope-Async": "enable",  # 启用异步模式
             }
             
             data = {
@@ -143,25 +146,54 @@ class ImageGenerationTool(BaseTool):
             }
             
             async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, headers=headers, json=data)
+                response = await client.post(submit_url, headers=headers, json=data)
                 result = response.json()
             
-            if response.status_code == 200 and "output" in result:
-                image_url = result["output"]["results"][0]["url"]
+            if response.status_code != 200:
+                error_msg = result.get("message", "未知错误")
+                return f"❌ 提交图片生成任务失败: {error_msg}"
+            
+            # 获取任务ID
+            task_id = result["output"]["task_id"]
+            
+            # 步骤2: 轮询查询任务状态
+            query_url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
+            query_headers = {
+                "Authorization": f"Bearer {self.api_key}",
+            }
+            
+            max_retries = 30  # 最多等待30次
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                await asyncio.sleep(2)  # 每2秒查询一次
                 
-                # 下载图片
-                async with httpx.AsyncClient() as client:
-                    img_response = await client.get(image_url)
-                    if img_response.status_code == 200:
-                        # 保存图片
-                        import time
-                        filename = f"generated_{int(time.time())}.png"
-                        filepath = os.path.join(self.save_dir, filename)
-                        
-                        with open(filepath, "wb") as f:
-                            f.write(img_response.content)
-                        
-                        return f"""
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    query_response = await client.get(query_url, headers=query_headers)
+                    query_result = query_response.json()
+                
+                if query_response.status_code != 200:
+                    return f"❌ 查询任务状态失败: {query_result.get('message', '未知错误')}"
+                
+                task_status = query_result["output"]["task_status"]
+                
+                if task_status == "SUCCEEDED":
+                    # 任务成功，获取图片URL
+                    image_url = query_result["output"]["results"][0]["url"]
+                    
+                    # 下载图片
+                    async with httpx.AsyncClient() as client:
+                        img_response = await client.get(image_url)
+                        if img_response.status_code == 200:
+                            # 保存图片
+                            import time
+                            filename = f"generated_{int(time.time())}.png"
+                            filepath = os.path.join(self.save_dir, filename)
+                            
+                            with open(filepath, "wb") as f:
+                                f.write(img_response.content)
+                            
+                            return f"""
 ✅ 图片生成成功！
 
 提示词: {prompt}
@@ -170,9 +202,20 @@ class ImageGenerationTool(BaseTool):
 
 你可以查看该图片，或让我分析这张图片的内容。
 """
-            else:
-                error_msg = result.get("message", "未知错误")
-                return f"❌ 图片生成失败: {error_msg}"
+                
+                elif task_status == "FAILED":
+                    error_msg = query_result["output"].get("message", "生成失败")
+                    return f"❌ 图片生成失败: {error_msg}"
+                
+                elif task_status in ["PENDING", "RUNNING"]:
+                    # 任务还在进行中，继续等待
+                    retry_count += 1
+                    continue
+                else:
+                    return f"❌ 未知的任务状态: {task_status}"
+            
+            # 超时
+            return f"❌ 图片生成超时，请稍后重试。任务ID: {task_id}"
                 
         except Exception as e:
             return f"❌ 图片生成出错: {str(e)}"
