@@ -35,7 +35,7 @@
 
 6. **🎨 多模态功能** ⭐ NEW
    - **图片理解**：支持分析图片内容（jpg/png/gif/webp）
-   - **图片生成**：根据文本描述生成图片（通义万相API）
+   - **图片生成**：根据文本描述生成图片 
    - **图片搜索**：搜索相关图片资源
    - **多模态对话**：在对话中混合文本和图片
 
@@ -271,7 +271,7 @@ message = {
 
 **工具集成：**
 - `ImageSearchTool`: 图片搜索工具
-- `ImageGenerationTool`: 图片生成工具（通义万相API）
+- `ImageGenerationTool`: 图片生成工具 
 - `ImageAnalysisTool`: 图片分析辅助工具
 
 ### 常见问题
